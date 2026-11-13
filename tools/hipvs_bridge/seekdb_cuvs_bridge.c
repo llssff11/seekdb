@@ -15,27 +15,30 @@
 /* ---------------------------------------------------------------------------
  * CAGRA build parameters.
  *
- * The upstream defaults used here were graph_degree=128,
- * intermediate_graph_degree=256, nn_descent_niter=100.  NN-descent cost grows
- * with niter and with the intermediate degree, and on a 250k x 128 dataset the
- * three of them together account for >90% of the whole CREATE VECTOR INDEX
- * wall time (42 s of 46 s measured on the contest hardware), while the search
- * side keeps recall saturated.
+ * The upstream defaults are graph_degree=128, intermediate_graph_degree=256,
+ * nn_descent_niter=100.  NN-descent cost grows with niter and with the
+ * intermediate degree, and on a 250k x 128 dataset those knobs account for
+ * >90% of the whole CREATE VECTOR INDEX wall time (42 s of 46 s measured on
+ * the contest hardware), while the search side stays recall-saturated.
  *
- * Measured on SIFT250K (250k x 128, L2, m=16, ef_construction=200,
- * ef_search=64, 4096 queries):
+ * graph_degree is kept at 128 so the query graph has exactly the shape the
+ * baseline produces (query throughput and hit behaviour unchanged).  Only the
+ * refinement budget is reduced, and not all the way down: the contest also
+ * gates recall@100 against the same-round baseline (+-0.005), and the 100th
+ * neighbour is what degrades first on high-dimensional data.  Measured on
+ * SIFT250K (250k x 128, L2, m=16, ef_construction=200, ef_search=64):
  *
  *   gd/igd/niter   build    recall@10   recall@100
  *   128/256/100    43.9 s   0.9999      1.000     <- baseline defaults
- *   128/128/20     11.1 s   1.000       1.000     <- shipped here
+ *   128/128/20     11.1 s   1.000       1.000     <- fastest, too shallow for 256-d
+ *   128/128/40     ~17 s    1.000       1.000     <- shipped here
  *
- * graph_degree stays at 128 so the search graph has exactly the shape the
- * baseline produces (query throughput and recall behaviour are unchanged);
- * only the refinement budget is reduced.  See docs/amd_cagra_build.md.
+ * See docs/amd_cagra_build.md for the recall-vs-build curve on a hard
+ * 250k x 256 proxy, which is what drove the niter=40 choice.
  * ------------------------------------------------------------------------- */
 #define SEEKDB_CAGRA_GRAPH_DEGREE 128
 #define SEEKDB_CAGRA_INTERMEDIATE_DEGREE 128
-#define SEEKDB_CAGRA_NN_DESCENT_NITER 20
+#define SEEKDB_CAGRA_NN_DESCENT_NITER 40
 
 static int sk_verbose(void)
 {
