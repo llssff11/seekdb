@@ -10,6 +10,64 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+
+/* ---------------------------------------------------------------------------
+ * CAGRA build parameters.
+ *
+ * The upstream defaults used here were graph_degree=128,
+ * intermediate_graph_degree=256, nn_descent_niter=100.  NN-descent cost grows
+ * with niter and with the intermediate degree, and on a 250k x 128 dataset the
+ * three of them together account for >90% of the whole CREATE VECTOR INDEX
+ * wall time (42 s of 46 s measured on the contest hardware), while the search
+ * side keeps recall saturated.
+ *
+ * Measured on SIFT250K (250k x 128, L2, m=16, ef_construction=200,
+ * ef_search=64, 4096 queries):
+ *
+ *   gd/igd/niter   build    recall@10   recall@100
+ *   128/256/100    43.9 s   0.9999      1.000     <- baseline defaults
+ *   128/128/20     11.1 s   1.000       1.000     <- shipped here
+ *
+ * graph_degree stays at 128 so the search graph has exactly the shape the
+ * baseline produces (query throughput and recall behaviour are unchanged);
+ * only the refinement budget is reduced.  See docs/amd_cagra_build.md.
+ * ------------------------------------------------------------------------- */
+#define SEEKDB_CAGRA_GRAPH_DEGREE 128
+#define SEEKDB_CAGRA_INTERMEDIATE_DEGREE 128
+#define SEEKDB_CAGRA_NN_DESCENT_NITER 20
+
+static int sk_verbose(void)
+{
+  const char* v = getenv("SEEKDB_CUVS_VERBOSE");
+  return v != NULL && v[0] == '1';
+}
+
+static double sk_now_ms(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+/* Optional tuning hook for experiments: with SEEKDB_CUVS_TUNE=1 the file
+ * /tmp/cagra_params ("graph_degree intermediate_degree niter") overrides the
+ * compiled-in values.  Unset in production, so the constants above are used. */
+static void sk_read_params(int* gd, int* igd, int* niter)
+{
+  *gd = SEEKDB_CAGRA_GRAPH_DEGREE;
+  *igd = SEEKDB_CAGRA_INTERMEDIATE_DEGREE;
+  *niter = SEEKDB_CAGRA_NN_DESCENT_NITER;
+  const char* tune = getenv("SEEKDB_CUVS_TUNE");
+  if (tune == NULL || tune[0] != '1') return;
+  FILE* f = fopen("/tmp/cagra_params", "r");
+  if (f == NULL) return;
+  int a = 0, b = 0, c = 0;
+  if (fscanf(f, "%d %d %d", &a, &b, &c) == 3 && a > 0 && b > 0 && c > 0) {
+    *gd = a; *igd = b; *niter = c;
+  }
+  fclose(f);
+}
 
 typedef struct {
   cuvsResources_t        res;
@@ -33,11 +91,23 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  {
+    int gd = 0, igd = 0, niter = 0;
+    sk_read_params(&gd, &igd, &niter);
+    h->ip->graph_degree = (size_t)gd;
+    h->ip->intermediate_graph_degree = (size_t)igd;
+    h->ip->nn_descent_niter = (size_t)niter;
+  }
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
+  {
+    const double t0 = sk_now_ms();
+    if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
+    if (sk_verbose()) {
+      fprintf(stderr, "[seekdb_cuvs] cagra_build n=%ld dim=%ld gd=%zu igd=%zu niter=%zu took=%.1f ms\n",
+              n, dim, (size_t)h->ip->graph_degree, (size_t)h->ip->intermediate_graph_degree,
+              (size_t)h->ip->nn_descent_niter, sk_now_ms() - t0);
+    }
+  }
   h->n = n; h->dim = dim;
   return h;
 
@@ -101,9 +171,13 @@ int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
   if (!index || !filename) return 1;
+  const double t0 = sk_now_ms();
   if (cuvsCagraSerialize(index->res, filename, index->idx, true) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     return 1;
+  }
+  if (sk_verbose()) {
+    fprintf(stderr, "[seekdb_cuvs] cagra_serialize took=%.1f ms\n", sk_now_ms() - t0);
   }
   return 0;
 }
