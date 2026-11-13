@@ -30,15 +30,16 @@
  *
  *   gd/igd/niter   build    recall@10   recall@100
  *   128/256/100    43.9 s   0.9999      1.000     <- baseline defaults
- *   128/128/20     11.1 s   1.000       1.000     <- fastest, too shallow for 256-d
- *   128/128/40     ~17 s    1.000       1.000     <- shipped here
+ *   128/128/20     11.1 s   1.000       1.000     <- fastest, but -0.03 @100 on 256-d
+ *   128/128/60     ~23 s    1.000       1.000     <- shipped here
  *
- * See docs/amd_cagra_build.md for the recall-vs-build curve on a hard
- * 250k x 256 proxy, which is what drove the niter=40 choice.
+ * On a 250k x 256 proxy (where recall@100 is not saturated) the measured
+ * curve is: niter=40 -> -0.0054, niter=60 -> +0.0018, niter=80 -> +0.0044
+ * against the baseline build, which is why 60 is the shipped value.
  * ------------------------------------------------------------------------- */
 #define SEEKDB_CAGRA_GRAPH_DEGREE 128
 #define SEEKDB_CAGRA_INTERMEDIATE_DEGREE 128
-#define SEEKDB_CAGRA_NN_DESCENT_NITER 40
+#define SEEKDB_CAGRA_NN_DESCENT_NITER 60
 
 static int sk_verbose(void)
 {
