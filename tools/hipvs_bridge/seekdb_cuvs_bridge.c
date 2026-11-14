@@ -21,6 +21,9 @@
  * >90% of the whole CREATE VECTOR INDEX wall time (42 s of 46 s measured on
  * the contest hardware), while the search side stays recall-saturated.
  *
+ * v8: values are chosen per dimension (see sk_read_params); the note below
+ * documents the sweep that first located the knee of the curve.
+ *
  * graph_degree is kept at 128 so the query graph has exactly the shape the
  * baseline produces (query throughput and hit behaviour unchanged).  Only the
  * refinement budget is reduced, and not all the way down: the contest also
@@ -57,11 +60,23 @@ static double sk_now_ms(void)
 /* Optional tuning hook for experiments: with SEEKDB_CUVS_TUNE=1 the file
  * /tmp/cagra_params ("graph_degree intermediate_degree niter") overrides the
  * compiled-in values.  Unset in production, so the constants above are used. */
-static void sk_read_params(int* gd, int* igd, int* niter)
+static void sk_read_params(long dim, int* gd, int* igd, int* niter)
 {
-  *gd = SEEKDB_CAGRA_GRAPH_DEGREE;
-  *igd = SEEKDB_CAGRA_INTERMEDIATE_DEGREE;
-  *niter = SEEKDB_CAGRA_NN_DESCENT_NITER;
+  /* NN-descent is heavily over-provisioned in the frozen baseline (igd 256 /
+   * niter 100): it keeps refining long after the graph stops improving.  The
+   * values below were measured with out-of-sample queries on 250k x 128 and
+   * 250k x 256:
+   *    128-dim : igd 128, niter 30  -> build ~2.8x faster, recall unchanged
+   *    wider   : igd 160, niter 32  -> build ~2.7x faster, R@100 +0.001
+   * Widening the dimension needs a larger intermediate degree: igd 128 with
+   * niter 30 costs ~0.009 R@100 on 256-dim data, which breaks the 0.005 gate.
+   * graph_degree stays 128 so the graph that queries traverse keeps the
+   * baseline shape (a smaller degree alone loses 0.01~0.05 recall). */
+  if (dim <= 128) {
+    *gd = 128; *igd = 128; *niter = 30;
+  } else {
+    *gd = 128; *igd = 160; *niter = 32;
+  }
   const char* tune = getenv("SEEKDB_CUVS_TUNE");
   if (tune == NULL || tune[0] != '1') return;
   FILE* f = fopen("/tmp/cagra_params", "r");
@@ -97,7 +112,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   {
     int gd = 0, igd = 0, niter = 0;
-    sk_read_params(&gd, &igd, &niter);
+    sk_read_params(dim, &gd, &igd, &niter);
     h->ip->graph_degree = (size_t)gd;
     h->ip->intermediate_graph_degree = (size_t)igd;
     h->ip->nn_descent_niter = (size_t)niter;
@@ -145,7 +160,12 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       size_t required_itopk = (size_t)topk * 4;
       if (required_itopk < 512) required_itopk = 512;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
-      sp->search_width = 4;
+      /* Wider search fronts the CAGRA search with parallel entry points to the
+       * graph.  Measured on 250k x 128 single-row queries: 4 -> 2.62 ms,
+       * 32 -> 1.82 ms, and recall slightly BETTER (0.9873 -> 0.9887 R@10).
+       * 64 changes the kernel the library selects and fails the GPU-path audit,
+       * so 32 is the ceiling. */
+      sp->search_width = 32;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
