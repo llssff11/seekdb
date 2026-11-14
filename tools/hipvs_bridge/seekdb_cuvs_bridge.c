@@ -75,7 +75,9 @@ static void sk_read_params(long dim, int* gd, int* igd, int* niter)
   if (dim <= 128) {
     *gd = 128; *igd = 128; *niter = 30;
   } else {
-    *gd = 128; *igd = 160; *niter = 32;
+    /* lower the iteration count again, compensating with a wider intermediate
+     * graph (176 instead of 160) so recall stays where it was at niter 32 */
+    *gd = 128; *igd = 176; *niter = 24;
   }
   const char* tune = getenv("SEEKDB_CUVS_TUNE");
   if (tune == NULL || tune[0] != '1') return;
