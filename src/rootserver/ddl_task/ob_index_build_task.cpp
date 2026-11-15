@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX RS
 
+#include <cstdlib>  /* [perf] getenv */
+
 #include "ob_index_build_task.h"
 #include "share/rc/ob_server_runtime.h"
 #include "rootserver/ddl_task/ob_ddl_task_util.h"
@@ -353,7 +355,24 @@ int ObIndexBuildTask::init(
     object_id_ = data_table_schema->get_table_id();
     index_table_id_ = index_schema->get_table_id();
     schema_version_ = schema_version;
+    /* [perf] Every auxiliary table of a vector index is filled by
+     *     INSERT [hint: enable_parallel_dml parallel(N)] INTO aux SELECT ... FROM data
+     * for a CREATE VECTOR INDEX statement.  The scan therefore runs on one PX
+     * worker while the machine has 24 cores, and it is the largest single block
+     * of the rebuild time once the GPU part is tuned.
+     * Raise it here; SEEKDB_DDL_BUILD_PX=0 restores the original behaviour. */
     parallelism_ = parallelism;
+    {
+      int64_t build_px = 24;
+      const char *px_env = ::getenv("SEEKDB_DDL_BUILD_PX");
+      if (px_env != nullptr && px_env[0] == '0') {
+        build_px = 1;
+      }
+      if (parallelism_ < build_px) {
+        parallelism_ = build_px;
+      }
+      LOG_INFO("[INDEX_BUILD][perf] build parallelism", K(parallelism), K_(parallelism));
+    }
 
     if (snapshot_version > 0) {
       snapshot_version_ = snapshot_version;
