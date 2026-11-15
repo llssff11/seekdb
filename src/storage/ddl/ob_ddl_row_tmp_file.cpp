@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 
+#include <cstdlib>  /* [perf] getenv/atoll */
+
 #include "storage/ddl/ob_ddl_row_tmp_file.h"
 #include "storage/blocksstable/ob_datum_row.h"
 #include "storage/ddl/ob_pipeline.h"
@@ -65,7 +67,25 @@ int ObDDLRowFile::open(const ObIArray<ObColumnSchemaItem> &all_column_schema_its
         bdrs_.vectors_.at(i) = nullptr;
       }
       options.max_batch_size_ = max_batch_size;
-      options.resident_memory_limit_ = memory_limit;
+      /* [perf] Rotation and residency are two independent knobs:
+       *   rotation_threshold_ decides how often the consumer is fed a batch
+       *     (it must stay small, otherwise the pipeline stops streaming and
+       *      deadlocks - measured),
+       *   resident_memory_limit_ decides how much of the spooled data stays in
+       *     RAM before the spool starts writing temp files.
+       * The baseline passes the same 512KB for both, so a 250k-row slice is
+       * written to a temp file and read straight back.  Keep the rotation
+       * cadence and raise residency: the data never touches the disk.
+       * SEEKDB_ROW_FILE_RESIDENT_MB=0 restores the original behaviour. */
+      int64_t resident_limit = 1024LL * 1024LL * 1024LL;
+      {
+        const char *resident_env = ::getenv("SEEKDB_ROW_FILE_RESIDENT_MB");
+        if (resident_env != nullptr) {
+          const int64_t mb = ::atoll(resident_env);
+          resident_limit = mb > 0 ? mb * 1024LL * 1024LL : memory_limit;
+        }
+      }
+      options.resident_memory_limit_ = resident_limit;
       options.rotation_threshold_ = memory_limit;
       options.dir_id_ = dir_id;
       options.compressor_type_ = NONE_COMPRESSOR;
