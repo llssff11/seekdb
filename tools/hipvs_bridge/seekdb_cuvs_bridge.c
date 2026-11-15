@@ -77,7 +77,7 @@ static void sk_read_params(long dim, int* gd, int* igd, int* niter)
      * (250k x 128) recall@10 stays at 1.0 with niter 8 while the build drops
      * from 16.8s to 9.1s.  nn-descent converges in a handful of iterations
      * here, everything beyond is pure waste. */
-    *gd = 128; *igd = 128; *niter = 8;
+    *gd = 128; *igd = 128; *niter = 2;
   } else {
     *gd = 128; *igd = 160; *niter = 32;
   }
