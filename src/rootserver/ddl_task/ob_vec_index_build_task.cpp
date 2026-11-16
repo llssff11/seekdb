@@ -16,8 +16,6 @@
 
 #define USING_LOG_PREFIX RS
 
-#include <cstdlib>  /* [perf] getenv */
-
 #include "rootserver/ddl_task/ob_vec_index_build_task.h"
 #include "share/rc/ob_server_runtime.h"
 #include "rootserver/ob_local_ddl_serial_call.h"
@@ -296,16 +294,6 @@ int ObVecIndexBuildTask::process()
   return ret;
 }
 
-/* [perf] see the GENERATE_* states: submit all aux tables before waiting. */
-static bool aux_tasks_parallel()
-{
-  static const bool parallel = []() {
-    const char *env = ::getenv("SEEKDB_VEC_AUX_SEQ");
-    return env == nullptr || env[0] != '1';
-  }();
-  return parallel;
-}
-
 bool ObVecIndexBuildTask::is_valid() const
 {
   return is_inited_ && !trace_id_.is_invalid();
@@ -509,20 +497,7 @@ int ObVecIndexBuildTask::get_next_status(share::ObDDLTaskStatus &next_status)
         break;
       }
       case ObDDLTaskStatus::GENERATE_ROWKEY_VID_SCHEMA: {
-        /* [perf] The auxiliary tables are independent of each other, but the
-         * original state machine submits them one at a time
-         *   GENERATE_A -> WAIT_A -> GENERATE_B -> WAIT_B -> GENERATE_C -> WAIT_C
-         * so their builds are fully serialised (~0.6-0.7s each, three of them)
-         * and the expensive snapshot-data build only starts after the first one
-         * has finished.  Submit all of them back to back and wait once: the
-         * children then run concurrently with each other and with the index
-         * build, and the parent pays only the longest one.
-         * SEEKDB_VEC_AUX_SEQ=1 restores the original ordering. */
-        if (aux_tasks_parallel()) {
-          next_status = ObDDLTaskStatus::GENERATE_VEC_AUX_SCHEMA;
-        } else {
-          next_status = ObDDLTaskStatus::WAIT_ROWKEY_VID_TABLE_COMPLEMENT;
-        }
+        next_status = ObDDLTaskStatus::WAIT_ROWKEY_VID_TABLE_COMPLEMENT;
         break;
       }
       case ObDDLTaskStatus::WAIT_ROWKEY_VID_TABLE_COMPLEMENT: {
@@ -530,11 +505,7 @@ int ObVecIndexBuildTask::get_next_status(share::ObDDLTaskStatus &next_status)
         break;
       }
       case ObDDLTaskStatus::GENERATE_VEC_AUX_SCHEMA: {
-        if (aux_tasks_parallel()) {
-          next_status = ObDDLTaskStatus::GENERATE_VID_ROWKEY_SCHEMA;
-        } else {
-          next_status = ObDDLTaskStatus::WAIT_VEC_AUX_TABLE_COMPLEMENT;
-        }
+        next_status = ObDDLTaskStatus::WAIT_VEC_AUX_TABLE_COMPLEMENT;
         break;
       }
       case ObDDLTaskStatus::WAIT_VEC_AUX_TABLE_COMPLEMENT: {
